@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import joblib
@@ -35,6 +34,14 @@ ISOLATION_CONFIG_PATH = (
 @st.cache_resource
 def load_model(model_path):
     return joblib.load(model_path)
+
+
+def reset_results_if_input_changed(state_key, input_signature):
+    """Clear old results when the uploaded input/model configuration changes."""
+    signature_key = f"{state_key}_signature"
+    if st.session_state.get(signature_key) != input_signature:
+        st.session_state.pop(state_key, None)
+        st.session_state[signature_key] = input_signature
 
 
 st.title("🛡️ NetGuard ML")
@@ -97,9 +104,7 @@ if mode == "Multiclass Detection":
             ]
 
             if missing:
-                st.error(
-                    f"Missing {len(missing)} required feature(s)."
-                )
+                st.error(f"Missing {len(missing)} required feature(s).")
                 st.write("Missing features:", missing[:30])
             else:
                 X = df[expected_features].apply(
@@ -111,6 +116,14 @@ if mode == "Multiclass Detection":
                     st.warning(
                         "Some rows have no usable numeric feature values."
                     )
+
+                input_signature = (
+                    f"{selected_model_name}|{uploaded_file.name}|"
+                    f"{len(df)}|{','.join(df.columns)}"
+                )
+                reset_results_if_input_changed(
+                    "multiclass_results", input_signature
+                )
 
                 if st.button(
                     "Analyze Network Traffic",
@@ -127,10 +140,15 @@ if mode == "Multiclass Detection":
                         "BENIGN",
                         "POTENTIAL ATTACK"
                     )
+                    st.session_state["multiclass_results"] = results
 
-                    benign_count = int(
-                        (predictions == "BENIGN").sum()
-                    )
+                # Render saved results outside the button block. This is
+                # important because Streamlit reruns the script on filter changes.
+                results = st.session_state.get("multiclass_results")
+
+                if results is not None:
+                    predictions = results["Prediction"]
+                    benign_count = int((predictions == "BENIGN").sum())
                     attack_count = len(predictions) - benign_count
 
                     st.write("### Detection Summary")
@@ -146,9 +164,7 @@ if mode == "Multiclass Detection":
                         .rename_axis("Class")
                         .reset_index(name="Records")
                     )
-                    st.dataframe(
-                        distribution, use_container_width=True
-                    )
+                    st.dataframe(distribution, use_container_width=True)
 
                     st.write("### Detection Results")
                     selected_class = st.selectbox(
@@ -165,16 +181,17 @@ if mode == "Multiclass Detection":
                             results["Prediction"] == selected_class
                         ]
 
-                    st.dataframe(
-                        filtered, use_container_width=True
+                    st.caption(
+                        f"Showing {len(filtered):,} of {len(results):,} "
+                        "matching records."
                     )
+                    st.dataframe(filtered, use_container_width=True)
                     st.download_button(
                         "Download Results CSV",
-                        data=results.to_csv(
-                            index=False
-                        ).encode("utf-8"),
+                        data=results.to_csv(index=False).encode("utf-8"),
                         file_name="netguard_multiclass_results.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        key="multiclass_download"
                     )
 
                     st.warning(
@@ -183,10 +200,8 @@ if mode == "Multiclass Detection":
                         "unseen traffic may differ from development "
                         "results. Review alerts before taking action."
                     )
-
         except Exception as e:
             st.error(f"Unable to process the uploaded CSV: {e}")
-
 
 else:
     st.info(
@@ -221,7 +236,6 @@ else:
         default_threshold = float(
             config.get("score_threshold", -0.02999)
         )
-
         st.success("Experimental Isolation Forest model loaded.")
 
     except Exception as e:
@@ -252,10 +266,10 @@ else:
 
             st.write("### Uploaded Data Preview")
             st.dataframe(
-    df.head(10),
-    use_container_width=True,
-    height=300
-)
+                df.head(10),
+                use_container_width=True,
+                height=300
+            )
             st.caption(f"Uploaded records: {len(df):,}")
 
             missing = [
@@ -268,9 +282,7 @@ else:
                     "No feature list found in the configuration file."
                 )
             elif missing:
-                st.error(
-                    f"Missing {len(missing)} required feature(s)."
-                )
+                st.error(f"Missing {len(missing)} required feature(s).")
                 st.write("Missing features:", missing[:30])
             else:
                 X = df[expected_features].apply(
@@ -284,6 +296,14 @@ else:
                         "Some rows have no usable numeric feature values. "
                         "Review these rows before relying on their scores."
                     )
+
+                input_signature = (
+                    f"{uploaded_file.name}|{len(df)}|{threshold}|"
+                    f"{','.join(df.columns)}"
+                )
+                reset_results_if_input_changed(
+                    "anomaly_results", input_signature
+                )
 
                 if st.button(
                     "Detect Anomalies",
@@ -302,7 +322,14 @@ else:
                     results["Anomaly Score"] = scores
                     results["Prediction"] = predictions
                     results["Status"] = predictions
+                    st.session_state["anomaly_results"] = results
 
+                # Render saved results outside the button block so the
+                # filter remains usable after Streamlit reruns.
+                results = st.session_state.get("anomaly_results")
+
+                if results is not None:
+                    predictions = results["Prediction"]
                     anomaly_count = int(
                         (predictions == "POTENTIAL ANOMALY").sum()
                     )
@@ -321,9 +348,7 @@ else:
                         .rename_axis("Class")
                         .reset_index(name="Records")
                     )
-                    st.dataframe(
-                        distribution, use_container_width=True
-                    )
+                    st.dataframe(distribution, use_container_width=True)
 
                     st.write("### Detection Results")
                     selected_class = st.selectbox(
@@ -340,31 +365,22 @@ else:
                             results["Prediction"] == selected_class
                         ]
 
-                    # Display only a limited number of rows
-                    DISPLAY_LIMIT = 500
-
+                    display_limit = 500
                     st.caption(
-                        f"Showing up to {DISPLAY_LIMIT:,} rows "
+                        f"Showing up to {display_limit:,} rows "
                         f"out of {len(filtered):,} matching records."
                     )
-
                     st.dataframe(
-                        filtered.head(DISPLAY_LIMIT),
+                        filtered.head(display_limit),
                         use_container_width=True,
                         height=450
                     )
-
-                    
-
-
-
                     st.download_button(
                         "Download Anomaly Results CSV",
-                        data=results.to_csv(
-                            index=False
-                        ).encode("utf-8"),
+                        data=results.to_csv(index=False).encode("utf-8"),
                         file_name="netguard_anomaly_results.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        key="anomaly_download"
                     )
 
                     st.warning(
@@ -374,6 +390,5 @@ else:
                         "malicious. Validate it on independent, labelled "
                         "traffic before operational use."
                     )
-
         except Exception as e:
             st.error(f"Unable to analyze the uploaded CSV: {e}")
